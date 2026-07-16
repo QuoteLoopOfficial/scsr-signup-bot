@@ -1,0 +1,19 @@
+{
+  "name": "scsr-signup-bot",
+  "version": "1.0.0",
+  "description": "Southern Cross Sim Racing signup bot",
+  "main": "index.js",
+  "private": true,
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "cors": "^2.8.5",
+    "discord.js": "^14.16.3",
+    "dotenv": "^16.4.5",
+    "express": "^4.21.2"
+  }
+}
