@@ -566,8 +566,9 @@
 (function(){
   const MIN = 1, MAX = 999;
 
-  // Point this at your bot's hosted URL once it's deployed (see README.md).
-  const API_BASE_URL = 'https://your-bot-url-here.up.railway.app';
+  // Empty = same origin: the page and the API are served by the one Render
+  // service, so calls go to /api/... on this same host (no CORS, no URL to set).
+  const API_BASE_URL = '';
 
   let takenNumbers = new Set();   // canonical integers, e.g. 1
   let takenDisplays = {};         // canonical -> the form it was claimed in, e.g. "01"
