@@ -44,6 +44,7 @@ const ROSTER_JSON = path.join(PUBLIC_DIR, 'roster.json');
 const MIN_NUMBER = 1;
 const MAX_NUMBER = 999;
 const LEAGUE_NAME = 'Southern Cross Sim Racing';
+const DRIVER_ROLE_NAME = 'Iracing'; // Discord role granted to every registered driver
 
 const {
   DISCORD_TOKEN,
@@ -222,6 +223,25 @@ async function setMemberNickname(member, name, displayNumber) {
   }
 }
 
+// Grants the driver role (DRIVER_ROLE_NAME). Best-effort, exactly like
+// setMemberNickname: it needs the bot's OWN role to sit above the driver role in
+// Server Settings -> Roles, plus Manage Roles (Administrator covers the perm, but
+// NOT the role-position rule). Safe to call repeatedly - it no-ops if they have it.
+async function assignMemberRole(member) {
+  try {
+    const roles = await member.guild.roles.fetch();
+    const role = roles.find((r) => r.name.toLowerCase() === DRIVER_ROLE_NAME.toLowerCase());
+    if (!role) return { ok: false, error: `role_not_found:${DRIVER_ROLE_NAME}` };
+    if (member.roles.cache.has(role.id)) return { ok: true, role: role.name, already: true };
+    await member.roles.add(role);
+    return { ok: true, role: role.name };
+  } catch (e) {
+    // Usually: the bot's own role isn't above the driver role, or the member is
+    // the server owner (Discord never lets a bot modify the owner).
+    return { ok: false, error: e.message };
+  }
+}
+
 async function tryResolveAndRename(guild, entry) {
   let member = null;
   if (entry.discordId) {
@@ -240,7 +260,9 @@ async function tryResolveAndRename(guild, entry) {
   if (!member) return { ok: false, error: 'not_found_in_server' };
 
   entry.discordId = member.id;
-  return setMemberNickname(member, entry.name, entry.display);
+  const nick = await setMemberNickname(member, entry.name, entry.display);
+  await assignMemberRole(member); // best-effort; nickname result drives the reply
+  return nick;
 }
 
 // ---------- Pinned roster message in Discord ----------
@@ -407,13 +429,17 @@ client.on(Events.InteractionCreate, async (interaction) => {
 
       const member = await interaction.guild.members.fetch(interaction.user.id).catch(() => null);
       let nickMsg = '';
+      let roleMsg = '';
       if (member) {
         const result = await setMemberNickname(member, name, num.display);
         nickMsg = result.ok
           ? ` Your nickname is now set to "${result.nickname}".`
           : ` (Couldn't set your nickname automatically - ask an admin to check bot role position.)`;
+        const roleResult = await assignMemberRole(member);
+        if (roleResult.ok && !roleResult.already) roleMsg = ` You've been given the ${roleResult.role} role.`;
+        else if (!roleResult.ok) roleMsg = ` (Couldn't assign the ${DRIVER_ROLE_NAME} role automatically - ask an admin to check bot role position.)`;
       }
-      await interaction.editReply(`You're in! #${num.display} is locked in for ${name}.${nickMsg}`);
+      await interaction.editReply(`You're in! #${num.display} is locked in for ${name}.${nickMsg}${roleMsg}`);
     });
     return;
   }
@@ -473,6 +499,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
           if (member) {
             const result = await setMemberNickname(member, name, num.display);
             nickMsg = result.ok ? ` Nickname set to "${result.nickname}".` : ` (Couldn't set nickname - check bot role position.)`;
+            await assignMemberRole(member);
           }
         }
         await interaction.reply({ content: `#${num.display} set to ${name}.${nickMsg}`, ephemeral: true });
@@ -509,6 +536,7 @@ client.on(Events.GuildMemberAdd, async (member) => {
       entry.discordId = member.id;
       entry.display = entry.display || key;
       await setMemberNickname(member, entry.name, entry.display);
+      await assignMemberRole(member);
       saveRosterToDisk(roster);
       break;
     }
@@ -519,6 +547,10 @@ client.on(Events.GuildMemberAdd, async (member) => {
 const app = express();
 app.use(express.json());
 app.use(cors({ origin: ALLOWED_ORIGIN === '*' ? true : ALLOWED_ORIGIN }));
+
+// Public: the signup webpage itself, served from this same Render service so the
+// page and its API share one origin (no CORS, no external URL to configure).
+app.get('/', (req, res) => res.sendFile(path.join(__dirname, 'southern-cross-signup.html')));
 
 function requireAdmin(req, res, next) {
   const secret = req.get('x-admin-secret');
