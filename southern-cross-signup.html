@@ -441,7 +441,6 @@
     font-family: 'JetBrains Mono', monospace;
     font-size: 12.5px; color: var(--muted); margin-top: 6px;
   }
-  .doc-links{ display: flex; gap: 8px; flex-wrap: wrap; }
   a.ghost-btn{ text-decoration: none; display: inline-block; }
   .field-hint{
     font-size: 12px; color: var(--muted); margin-top: 6px; line-height: 1.5;
@@ -535,11 +534,6 @@
         <div>
           <div class="plate-label">Live driver roster</div>
           <div class="roster-meta" id="rosterMeta">Loading…</div>
-        </div>
-        <div class="doc-links">
-          <a class="ghost-btn" id="rosterMdLink" href="#" target="_blank" rel="noopener">roster.md</a>
-          <a class="ghost-btn" id="rosterCsvLink" href="#" target="_blank" rel="noopener">roster.csv</a>
-          <a class="ghost-btn" id="rosterJsonLink" href="#" target="_blank" rel="noopener">roster.json</a>
         </div>
       </div>
       <div id="rosterTableWrap"><div class="loading">Loading roster…</div></div>
@@ -788,12 +782,6 @@
   }
 
   // ---------- Public roster ----------
-  function setDocLinks(){
-    document.getElementById('rosterMdLink').href = `${API_BASE_URL}/roster.md`;
-    document.getElementById('rosterCsvLink').href = `${API_BASE_URL}/roster.csv`;
-    document.getElementById('rosterJsonLink').href = `${API_BASE_URL}/roster.json`;
-  }
-
   async function loadPublicRoster(){
     const wrap = document.getElementById('rosterTableWrap');
     const meta = document.getElementById('rosterMeta');
@@ -828,7 +816,6 @@
 
   // ---------- Init ----------
   (async function init(){
-    setDocLinks();
     await fetchTakenNumbers();
     checkNumber();
     loadPublicRoster();

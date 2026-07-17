@@ -9,8 +9,7 @@
 //  - Automatically sets the driver's server nickname to "#Number Name", where
 //    Name is their iRacing name.
 //  - Keeps the roster in Supabase (Postgres), shared by the bot and the webpage.
-//  - Renders the public roster document (roster.md / roster.csv / roster.json)
-//    on demand from the database, served publicly and shown on the website.
+//  - Serves the roster as JSON (GET /api/roster) for the website to render.
 //  - Keeps a pinned roster message in a Discord channel in sync (optional).
 //  - Admin actions (remove / reassign a number) are available as /admin
 //    commands in Discord, restricted to whoever your server lets run them.
@@ -95,40 +94,6 @@ function rosterEntries(r) {
 function formatStamp(d) {
   const p = (n) => String(n).padStart(2, '0');
   return `${p(d.getDate())}-${p(d.getMonth() + 1)}-${d.getFullYear()} ${p(d.getHours())}:${p(d.getMinutes())}`;
-}
-
-function csvCell(v) {
-  let s = String(v === undefined || v === null ? '' : v);
-  // Neutralise spreadsheet formula injection: a cell starting with any of
-  // = + - @ TAB CR is prefixed with a single quote before the quoting below.
-  if (/^[=+\-@\t\r]/.test(s)) s = `'${s}`;
-  return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
-}
-
-function renderRosterMarkdown(entries, stamp) {
-  const lines = [];
-  lines.push(`# ${LEAGUE_NAME} - Driver Roster`);
-  lines.push('');
-  lines.push(`${entries.length} driver${entries.length === 1 ? '' : 's'} registered. Last updated ${stamp}.`);
-  lines.push('');
-  lines.push('| Number | Driver (iRacing name) |');
-  lines.push('| --- | --- |');
-  for (const e of entries) {
-    lines.push(`| #${e.display} | ${e.name || ''} |`);
-  }
-  if (entries.length === 0) lines.push('| - | No drivers registered yet |');
-  lines.push('');
-  lines.push('_Generated automatically. Do not edit by hand - changes are overwritten on the next signup._');
-  lines.push('');
-  return lines.join('\n');
-}
-
-function renderRosterCsv(entries) {
-  const lines = ['number,driver_name'];
-  for (const e of entries) {
-    lines.push([csvCell(e.display), csvCell(e.name || '')].join(','));
-  }
-  return lines.join('\n') + '\n';
 }
 
 // The public roster deliberately leaves out iRacing customer IDs. Those stay in
@@ -552,19 +517,6 @@ app.get('/api/taken-numbers', wrap(async (req, res) => {
 // Public: the roster document, as JSON
 app.get('/api/roster', wrap(async (req, res) => {
   res.json(publicRoster(await db.getRoster()));
-}));
-
-// Public: the roster document as downloadable files, rendered per request
-app.get('/roster.md', wrap(async (req, res) => {
-  const entries = rosterEntries(await db.getRoster());
-  res.type('text/markdown').send(renderRosterMarkdown(entries, formatStamp(new Date())));
-}));
-app.get('/roster.csv', wrap(async (req, res) => {
-  const entries = rosterEntries(await db.getRoster());
-  res.type('text/csv').send(renderRosterCsv(entries));
-}));
-app.get('/roster.json', wrap(async (req, res) => {
-  res.type('application/json').send(JSON.stringify(publicRoster(await db.getRoster()), null, 2));
 }));
 
 // Public: register a number from the webpage
