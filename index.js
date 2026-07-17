@@ -117,12 +117,12 @@ function renderRosterMarkdown(entries, stamp) {
   lines.push('');
   lines.push(`${entries.length} driver${entries.length === 1 ? '' : 's'} registered. Last updated ${stamp}.`);
   lines.push('');
-  lines.push('| Number | Driver (iRacing name) | Discord |');
-  lines.push('| --- | --- | --- |');
+  lines.push('| Number | Driver (iRacing name) |');
+  lines.push('| --- | --- |');
   for (const e of entries) {
-    lines.push(`| #${e.display} | ${e.name || ''} | ${e.discordUsername || '-'} |`);
+    lines.push(`| #${e.display} | ${e.name || ''} |`);
   }
-  if (entries.length === 0) lines.push('| - | No drivers registered yet | - |');
+  if (entries.length === 0) lines.push('| - | No drivers registered yet |');
   lines.push('');
   lines.push('_Generated automatically. Do not edit by hand - changes are overwritten on the next signup._');
   lines.push('');
@@ -130,9 +130,9 @@ function renderRosterMarkdown(entries, stamp) {
 }
 
 function renderRosterCsv(entries) {
-  const lines = ['number,driver_name,discord_username'];
+  const lines = ['number,driver_name'];
   for (const e of entries) {
-    lines.push([csvCell(e.display), csvCell(e.name || ''), csvCell(e.discordUsername || '')].join(','));
+    lines.push([csvCell(e.display), csvCell(e.name || '')].join(','));
   }
   return lines.join('\n') + '\n';
 }
@@ -146,7 +146,6 @@ function publicRoster(r) {
     number: e.display,
     canonical: e.canonical,
     name: e.name || '',
-    discordUsername: e.discordUsername || '',
     ts: e.ts || null,
   }));
   return { updatedAt: stamp.toISOString(), updatedAtLabel: formatStamp(stamp), count: entries.length, drivers: entries };
