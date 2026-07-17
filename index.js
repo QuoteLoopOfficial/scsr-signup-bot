@@ -45,7 +45,7 @@ const {
   GUILD_ID,
   ADMIN_SECRET,
   ALLOWED_ORIGIN,
-  ROSTER_CHANNEL_ID, // optional: bot keeps a pinned roster message here
+  ROSTER_CHANNEL_ID, // optional: channel where each new signup is announced
   SITE_URL,          // optional: link shown on the Discord roster message
   PORT,
 } = process.env;
@@ -210,18 +210,24 @@ async function tryResolveAndRename(guild, entry) {
   return nick;
 }
 
-// ---------- Pinned roster message in Discord ----------
-// Optional. Set ROSTER_CHANNEL_ID in .env to switch this on. The bot posts one
-// message and edits it forever after, so the channel stays clean.
-let rosterUpdateTimer = null;
-function scheduleDiscordRosterUpdate() {
-  if (!ROSTER_CHANNEL_ID) return;
-  // Coalesce bursts (e.g. a bulk import) into a single edit.
-  if (rosterUpdateTimer) clearTimeout(rosterUpdateTimer);
-  rosterUpdateTimer = setTimeout(() => {
-    rosterUpdateTimer = null;
-    updateDiscordRoster().catch((e) => console.error('Discord roster update failed:', e.message));
-  }, 1500);
+// ---------- Signup feed (Discord) ----------
+// Optional. Set ROSTER_CHANNEL_ID in .env to switch this on. On each NEW signup
+// the bot posts a standalone announcement to that channel - no edit, no pin, no
+// coalescing, each signup is its own message. Soft by design: a failed post must
+// NEVER fail the signup, so this catches everything and never throws.
+async function postSignupMessage(entry) {
+  if (!ROSTER_CHANNEL_ID || !client.isReady()) return;
+  try {
+    const channel = await client.channels.fetch(ROSTER_CHANNEL_ID).catch(() => null);
+    if (!channel || !channel.isTextBased()) return;
+    const embed = new EmbedBuilder()
+      .setColor(0x0039d8)
+      .setTitle(`#${entry.display} ${entry.name}`)
+      .setDescription(`iRacing ID: ${entry.iracing}\nDiscord: @${entry.discordUsername || ''}`);
+    await channel.send({ embeds: [embed] });
+  } catch (e) {
+    console.error('Signup feed post failed:', e.message);
+  }
 }
 
 function rosterEmbed(entries, stamp) {
@@ -238,31 +244,6 @@ function rosterEmbed(entries, stamp) {
     .setFooter({ text: `${entries.length} driver${entries.length === 1 ? '' : 's'} - updated ${stamp}` });
   if (SITE_URL) embed.addFields({ name: 'Claim a number', value: SITE_URL });
   return embed;
-}
-
-async function updateDiscordRoster() {
-  if (!ROSTER_CHANNEL_ID || !client.isReady()) return;
-  const current = await db.getRoster();
-  const entries = rosterEntries(current);
-  const embed = rosterEmbed(entries, formatStamp(new Date()));
-
-  const channel = await client.channels.fetch(ROSTER_CHANNEL_ID).catch(() => null);
-  if (!channel || !channel.isTextBased()) {
-    console.error('ROSTER_CHANNEL_ID does not point at a text channel the bot can see.');
-    return;
-  }
-
-  const rosterMessageId = await db.getState('rosterMessageId');
-  if (rosterMessageId) {
-    const existing = await channel.messages.fetch(rosterMessageId).catch(() => null);
-    if (existing) {
-      await existing.edit({ embeds: [embed] });
-      return;
-    }
-  }
-  const sent = await channel.send({ embeds: [embed] });
-  await db.setState('rosterMessageId', sent.id);
-  await sent.pin().catch(() => {});
 }
 
 // ---------- Slash commands ----------
@@ -371,7 +352,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
           `You already have #${mine.display}. Ask an admin if you want to change it.`
         );
       }
-      scheduleDiscordRosterUpdate();
+      postSignupMessage(entry); // soft: announce this signup in the feed
 
       const member = await interaction.guild.members.fetch(interaction.user.id).catch(() => null);
       let nickMsg = '';
@@ -409,7 +390,6 @@ client.on(Events.InteractionCreate, async (interaction) => {
         if (!removed) {
           return interaction.reply({ content: `#${num.display} isn't taken.`, ephemeral: true });
         }
-        scheduleDiscordRosterUpdate();
         await interaction.reply({ content: `#${removed.display} has been freed up.`, ephemeral: true });
       });
       return;
@@ -458,8 +438,6 @@ client.on(Events.InteractionCreate, async (interaction) => {
         if (!result.ok) {
           return interaction.reply({ content: `Couldn't set #${num.display} - ${result.reason}. Try /admin remove first.`, ephemeral: true });
         }
-        scheduleDiscordRosterUpdate();
-
         let nickMsg = '';
         if (discordUser) {
           const member = await interaction.guild.members.fetch(discordUser.id).catch(() => null);
@@ -491,7 +469,6 @@ client.on(Events.InteractionCreate, async (interaction) => {
         if (result.ok) ok++; else failed++;
         if (entry.discordId) await db.setDiscordUserId(entry.canonical, entry.discordId);
       }
-      scheduleDiscordRosterUpdate();
       await interaction.editReply(`Sync complete: ${ok} nicknames updated, ${failed} skipped (member not found or couldn't be renamed).`);
       return;
     }
@@ -609,7 +586,7 @@ app.post('/api/register', wrap(async (req, res) => {
         error: `${cleanDiscord} already has #${mine ? mine.display : ''}. Ask an admin if you want to change it.`,
       });
     }
-    scheduleDiscordRosterUpdate();
+    postSignupMessage(entry); // soft: announce this signup in the feed
 
     // Try to rename them immediately if they're already in the server
     const guild = await client.guilds.fetch(GUILD_ID).catch(() => null);
@@ -645,7 +622,6 @@ app.delete('/api/admin/roster/:number', requireAdmin, wrap(async (req, res) => {
   await withLock(async () => {
     const removed = await db.removeByCanonical(num.canonical);
     if (!removed) return res.status(404).json({ error: 'Not found' });
-    scheduleDiscordRosterUpdate();
     res.json({ ok: true });
   });
 }));
@@ -673,7 +649,6 @@ app.post('/api/admin/import', requireAdmin, wrap(async (req, res) => {
       else if (result.reason === 'number_taken') conflicts++;  // number already held
       else duplicates++;                                       // already_registered (handle)
     }
-    scheduleDiscordRosterUpdate();
     res.json({ ok: true, added, skipped, conflicts, duplicates });
   });
 }));
@@ -692,14 +667,7 @@ app.post('/api/admin/sync', requireAdmin, wrap(async (req, res) => {
     if (result.ok) ok++; else failed++;
     if (entry.discordId) await db.setDiscordUserId(entry.canonical, entry.discordId);
   }
-  scheduleDiscordRosterUpdate();
   res.json({ ok: true, updated: ok, failed });
-}));
-
-// Admin: force a refresh of the pinned Discord roster message
-app.post('/api/admin/publish', requireAdmin, wrap(async (req, res) => {
-  scheduleDiscordRosterUpdate();
-  res.json({ ok: true });
 }));
 
 // ---------- Boot everything ----------
@@ -708,7 +676,6 @@ app.post('/api/admin/publish', requireAdmin, wrap(async (req, res) => {
   await client.login(DISCORD_TOKEN);
   client.once(Events.ClientReady, (c) => {
     console.log(`Bot logged in as ${c.user.tag}`);
-    scheduleDiscordRosterUpdate(); // sync the pinned roster message on boot
   });
 
   const port = PORT || 3000;
