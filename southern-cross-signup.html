@@ -172,8 +172,11 @@
     align-items: center;
     min-height: 44px;
     padding: 10px 16px;
-    border: 1px solid var(--line);
+    border: 1px solid rgba(255,255,255,0.16);
     border-radius: 8px;
+    background: rgba(255,255,255,0.08);
+    -webkit-backdrop-filter: blur(4px);
+    backdrop-filter: blur(4px);
     color: var(--text);
     text-decoration: none;
     font-weight: 600;
@@ -181,9 +184,9 @@
     transition: color .15s ease, border-color .15s ease, background .15s ease;
   }
   .hero-links a:hover{
-    color: var(--brand-blue);
+    color: #fff;
     border-color: var(--brand-blue);
-    background: rgba(91,140,255,0.10);
+    background: rgba(91,140,255,0.30);
   }
   .hero-links a:focus-visible{
     outline: 2px solid var(--brand-blue);
