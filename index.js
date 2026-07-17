@@ -37,7 +37,7 @@ const {
 const MIN_NUMBER = 1;
 const MAX_NUMBER = 999;
 const LEAGUE_NAME = 'Southern Cross Sim Racing';
-const DRIVER_ROLE_NAME = 'Iracing'; // Discord role granted to every registered driver
+const DRIVER_ROLE_NAME = process.env.DRIVER_ROLE_NAME || 'GR86 DRIVER'; // Discord role granted to every registered driver (override per season via env)
 
 const {
   DISCORD_TOKEN,
