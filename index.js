@@ -236,7 +236,7 @@ function rosterEmbed(entries, stamp) {
   }
   const embed = new EmbedBuilder()
     .setTitle(`${LEAGUE_NAME} - Driver Roster`)
-    .setColor(0xf5b700)
+    .setColor(0x0039d8)
     .setDescription(entries.length ? '```\n' + body + '\n```' : 'No drivers registered yet.')
     .setFooter({ text: `${entries.length} driver${entries.length === 1 ? '' : 's'} - updated ${stamp}` });
   if (SITE_URL) embed.addFields({ name: 'Claim a number', value: SITE_URL });
