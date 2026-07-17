@@ -516,6 +516,7 @@ const wrap = (fn) => (req, res) =>
 // Public: the signup webpage itself, served from this same Render service so the
 // page and its API share one origin (no CORS, no external URL to configure).
 app.get('/', (req, res) => res.sendFile(path.join(__dirname, 'southern-cross-signup.html')));
+app.get('/scsr-logo.png', (req, res) => res.sendFile(path.join(__dirname, 'scsr-logo.png')));
 
 function requireAdmin(req, res, next) {
   const secret = req.get('x-admin-secret');
