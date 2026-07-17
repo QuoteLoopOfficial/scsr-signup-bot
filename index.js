@@ -22,6 +22,7 @@ require('dotenv').config();
 const path = require('path');
 const express = require('express');
 const cors = require('cors');
+const rateLimit = require('express-rate-limit');
 const db = require('./db.js'); // the only module that talks to Supabase
 const {
   Client,
@@ -103,7 +104,10 @@ function formatStamp(d) {
 }
 
 function csvCell(v) {
-  const s = String(v === undefined || v === null ? '' : v);
+  let s = String(v === undefined || v === null ? '' : v);
+  // Neutralise spreadsheet formula injection: a cell starting with any of
+  // = + - @ TAB CR is prefixed with a single quote before the quoting below.
+  if (/^[=+\-@\t\r]/.test(s)) s = `'${s}`;
   return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
 }
 
@@ -330,6 +334,12 @@ client.on(Events.InteractionCreate, async (interaction) => {
         ephemeral: true,
       });
     }
+    if (name.length > 64) {
+      return interaction.reply({ content: 'iRacing name is too long (max 64 characters).', ephemeral: true });
+    }
+    if (interaction.user.username.length > 32) {
+      return interaction.reply({ content: 'Your Discord username is too long to register.', ephemeral: true });
+    }
 
     await interaction.deferReply({ ephemeral: true });
 
@@ -502,8 +512,25 @@ client.on(Events.GuildMemberAdd, async (member) => {
 
 // ---------- HTTP API for the signup webpage ----------
 const app = express();
+app.set('trust proxy', 1); // Render sits behind one proxy; trust the first hop so rate limits see the real client IP
 app.use(express.json());
-app.use(cors({ origin: ALLOWED_ORIGIN === '*' ? true : ALLOWED_ORIGIN }));
+// Same-origin only unless an explicit ALLOWED_ORIGIN is set. '*' / unset no
+// longer reflects every origin - the page is served from this same service.
+const corsOrigin = ALLOWED_ORIGIN && ALLOWED_ORIGIN !== '*' ? ALLOWED_ORIGIN : false;
+app.use(cors({ origin: corsOrigin }));
+
+// Public signup is the one unauthenticated write path (DB + Discord post), so
+// cap it hard per IP. Returns 429 with a plain message the page displays.
+const registerLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000, // 1 hour
+  max: 10,
+  // Only successful registrations count - a fumbled field or a just-taken
+  // number must never lock out a shared CGNAT IP (many drivers, one address).
+  skipFailedRequests: true,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Too many signups from your network. Please try again in an hour.' },
+});
 
 // Wrap an async route so a rejected promise (e.g. a database error) becomes a
 // clean 500 instead of a hung request.
@@ -554,7 +581,7 @@ app.get('/roster.json', wrap(async (req, res) => {
 }));
 
 // Public: register a number from the webpage
-app.post('/api/register', wrap(async (req, res) => {
+app.post('/api/register', registerLimiter, wrap(async (req, res) => {
   const { name, iracing, discordUsername, number } = req.body || {};
   const num = parseRaceNumber(number);
 
@@ -569,6 +596,12 @@ app.post('/api/register', wrap(async (req, res) => {
   }
   if (!/^[0-9]{1,8}$/.test(String(iracing).trim())) {
     return res.status(400).json({ error: 'iRacing ID should be your customer number, digits only.' });
+  }
+  if (String(name).trim().length > 64) {
+    return res.status(400).json({ error: 'iRacing name is too long (max 64 characters).' });
+  }
+  if (String(discordUsername).trim().length > 32) {
+    return res.status(400).json({ error: 'Discord username is too long (max 32 characters).' });
   }
 
   await withLock(async () => {
