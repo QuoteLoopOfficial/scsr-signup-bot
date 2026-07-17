@@ -469,7 +469,7 @@
               <button type="button" class="browse-btn" id="browseBtn">Browse open numbers</button>
             </div>
             <div class="status-msg muted" id="numStatus">Enter a number to check availability</div>
-            <div class="field-hint">One driver per number. Leading zeros are yours to keep but they don't make a new number: 1, 01 and 001 are the same slot.</div>
+            <div class="field-hint">One driver per number. Whole numbers only, 1–999 — no leading zeros (use 7, not 07).</div>
           </div>
           <button type="submit" class="submit-btn" id="submitBtn">Lock In Number</button>
           <div class="form-msg" id="formMsg"></div>
@@ -712,6 +712,11 @@
     }
     if(!num){
       formMsg.textContent = `Number must be between ${MIN} and ${MAX}.`;
+      formMsg.className = 'form-msg show bad';
+      return;
+    }
+    if(num.display.startsWith('0')){
+      formMsg.textContent = "Race numbers don't take leading zeros. Use 7, not 07.";
       formMsg.className = 'form-msg show bad';
       return;
     }

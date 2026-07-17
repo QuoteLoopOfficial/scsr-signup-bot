@@ -253,7 +253,7 @@ const commands = [
     .setName('race')
     .setDescription('Register your race number for Southern Cross Sim Racing')
     .addStringOption((o) =>
-      o.setName('number').setDescription('Race number, 1-999 (leading zeros allowed, e.g. 07)').setRequired(true)
+      o.setName('number').setDescription('Race number, 1-999 (whole numbers only, e.g. 7)').setRequired(true)
     )
     .addStringOption((o) =>
       o.setName('iracing_name').setDescription('Your iRacing name, exactly as it appears on your account').setRequired(true)
@@ -314,7 +314,13 @@ client.on(Events.InteractionCreate, async (interaction) => {
 
     if (!num) {
       return interaction.reply({
-        content: `Number must be between ${MIN_NUMBER} and ${MAX_NUMBER}. Leading zeros are fine (07 works), but 0 is not a number.`,
+        content: `Number must be a whole number between ${MIN_NUMBER} and ${MAX_NUMBER} - no leading zeros (use 7, not 07).`,
+        ephemeral: true,
+      });
+    }
+    if (num.display.startsWith('0')) {
+      return interaction.reply({
+        content: "Race numbers don't take leading zeros. Use 7, not 07.",
         ephemeral: true,
       });
     }
@@ -556,6 +562,9 @@ app.post('/api/register', wrap(async (req, res) => {
   }
   if (!num) {
     return res.status(400).json({ error: `Number must be between ${MIN_NUMBER} and ${MAX_NUMBER}` });
+  }
+  if (num.display.startsWith('0')) {
+    return res.status(400).json({ error: "Race numbers don't take leading zeros. Use 7, not 07." });
   }
   if (!/^[0-9]{1,8}$/.test(String(iracing).trim())) {
     return res.status(400).json({ error: 'iRacing ID should be your customer number, digits only.' });
