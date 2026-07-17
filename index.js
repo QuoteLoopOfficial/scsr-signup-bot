@@ -12,9 +12,8 @@
 //  - Renders the public roster document (roster.md / roster.csv / roster.json)
 //    on demand from the database, served publicly and shown on the website.
 //  - Keeps a pinned roster message in a Discord channel in sync (optional).
-//  - Admin actions (remove / reassign a number) are available as a /admin
-//    command, restricted to whoever your server lets run it (see README), and
-//    via the webpage's Admin tab, protected by ADMIN_SECRET.
+//  - Admin actions (remove / reassign a number) are available as /admin
+//    commands in Discord, restricted to whoever your server lets run them.
 //
 // Run with: npm install && npm start
 
@@ -44,7 +43,6 @@ const {
   DISCORD_TOKEN,
   CLIENT_ID,
   GUILD_ID,
-  ADMIN_SECRET,
   ALLOWED_ORIGIN,
   ROSTER_CHANNEL_ID, // optional: channel where each new signup is announced
   SITE_URL,          // optional: link shown on the Discord roster message
@@ -53,10 +51,6 @@ const {
 
 if (!DISCORD_TOKEN || !CLIENT_ID || !GUILD_ID) {
   console.error('Missing DISCORD_TOKEN, CLIENT_ID, or GUILD_ID in your .env file. See .env.example.');
-  process.exit(1);
-}
-if (!ADMIN_SECRET) {
-  console.error('Missing ADMIN_SECRET in your .env file - this protects the Admin tab on the webpage.');
   process.exit(1);
 }
 
@@ -138,8 +132,8 @@ function renderRosterCsv(entries) {
 }
 
 // The public roster deliberately leaves out iRacing customer IDs. Those stay in
-// the database and the Admin tab only. Add `iracing: e.iracing` below if you
-// want them published.
+// the database (and the /admin list Discord command) only. Add `iracing: e.iracing`
+// below if you want them published.
 function publicRoster(r) {
   const stamp = new Date();
   const entries = rosterEntries(r).map((e) => ({
@@ -544,12 +538,6 @@ const wrap = (fn) => (req, res) =>
 app.get('/', (req, res) => res.sendFile(path.join(__dirname, 'southern-cross-signup.html')));
 app.get('/scsr-logo.png', (req, res) => res.sendFile(path.join(__dirname, 'scsr-logo.png')));
 
-function requireAdmin(req, res, next) {
-  const secret = req.get('x-admin-secret');
-  if (secret !== ADMIN_SECRET) return res.status(401).json({ error: 'Invalid admin passphrase' });
-  next();
-}
-
 // Public: which numbers are taken. Returns canonical integers, so the webpage
 // knows 1, 01 and 001 are all gone once any one of them is claimed.
 app.get('/api/taken-numbers', wrap(async (req, res) => {
@@ -649,67 +637,6 @@ app.post('/api/register', registerLimiter, wrap(async (req, res) => {
         : `Registered! We couldn't find you in the Discord server yet - your nickname will be set automatically once you join, or ask an admin to run /admin sync.`,
     });
   });
-}));
-
-// Admin: full roster (includes Discord info and iRacing customer IDs)
-app.get('/api/admin/roster', requireAdmin, wrap(async (req, res) => {
-  res.json({ roster: await db.getRoster() });
-}));
-
-// Admin: remove an entry
-app.delete('/api/admin/roster/:number', requireAdmin, wrap(async (req, res) => {
-  const num = parseRaceNumber(req.params.number);
-  if (!num) return res.status(400).json({ error: 'Not a valid race number' });
-
-  await withLock(async () => {
-    const removed = await db.removeByCanonical(num.canonical);
-    if (!removed) return res.status(404).json({ error: 'Not found' });
-    res.json({ ok: true });
-  });
-}));
-
-// Admin: bulk import (used by the "Bulk import" box on the webpage)
-app.post('/api/admin/import', requireAdmin, wrap(async (req, res) => {
-  const { rows } = req.body || {}; // rows: [{number, name, iracing, discordUsername}]
-  if (!Array.isArray(rows)) return res.status(400).json({ error: 'rows must be an array' });
-
-  await withLock(async () => {
-    let added = 0, skipped = 0, conflicts = 0, duplicates = 0;
-    for (const row of rows) {
-      const num = parseRaceNumber(row.number);
-      if (!num) { skipped++; continue; } // invalid/unparseable row
-      const result = await db.claimNumber({
-        canonical: num.canonical,
-        display: num.display,
-        name: row.name || '',
-        iracing: row.iracing || '',
-        discordId: undefined,
-        discordUsername: row.discordUsername || undefined,
-        ts: Date.now(),
-      });
-      if (result.ok) added++;
-      else if (result.reason === 'number_taken') conflicts++;  // number already held
-      else duplicates++;                                       // already_registered (handle)
-    }
-    res.json({ ok: true, added, skipped, conflicts, duplicates });
-  });
-}));
-
-// Admin: re-apply nicknames for the whole roster on demand (same as /admin sync)
-app.post('/api/admin/sync', requireAdmin, wrap(async (req, res) => {
-  const roster = await db.getRoster();
-  const guild = await client.guilds.fetch(GUILD_ID).catch(() => null);
-  if (!guild) return res.status(500).json({ error: 'Bot is not connected to the server yet' });
-
-  let ok = 0, failed = 0;
-  for (const key of Object.keys(roster)) {
-    const entry = roster[key];
-    entry.display = entry.display || key;
-    const result = await tryResolveAndRename(guild, entry);
-    if (result.ok) ok++; else failed++;
-    if (entry.discordId) await db.setDiscordUserId(entry.canonical, entry.discordId);
-  }
-  res.json({ ok: true, updated: ok, failed });
 }));
 
 // ---------- Boot everything ----------

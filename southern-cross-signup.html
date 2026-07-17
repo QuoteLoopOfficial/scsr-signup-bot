@@ -475,7 +475,6 @@
   <div class="tabs">
     <button class="tab-btn active" data-tab="signup">Sign Up</button>
     <button class="tab-btn" data-tab="roster">Roster</button>
-    <button class="tab-btn" data-tab="admin">Admin</button>
   </div>
 
   <!-- SIGNUP PANEL -->
@@ -537,49 +536,16 @@
           <div class="plate-label">Live driver roster</div>
           <div class="roster-meta" id="rosterMeta">Loading…</div>
         </div>
+        <div class="doc-links">
+          <a class="ghost-btn" id="rosterMdLink" href="#" target="_blank" rel="noopener">roster.md</a>
+          <a class="ghost-btn" id="rosterCsvLink" href="#" target="_blank" rel="noopener">roster.csv</a>
+          <a class="ghost-btn" id="rosterJsonLink" href="#" target="_blank" rel="noopener">roster.json</a>
+        </div>
       </div>
       <div id="rosterTableWrap"><div class="loading">Loading roster…</div></div>
     </div>
   </section>
 
-  <!-- ADMIN PANEL -->
-  <section class="panel" id="panel-admin">
-    <div class="card" id="adminGate">
-      <div class="field">
-        <label for="adminPass">Admin passphrase</label>
-        <input type="text" id="adminPass" class="mono" placeholder="Enter the admin passphrase" autocomplete="off" />
-      </div>
-      <button type="button" class="submit-btn" id="adminUnlockBtn">Unlock Admin</button>
-      <div class="status-msg" id="adminGateStatus"></div>
-    </div>
-
-    <div class="card" id="adminContent" style="display:none;">
-      <div class="admin-toolbar">
-        <input type="text" id="adminSearch" placeholder="Search name, number, or iRacing ID..." />
-        <button class="ghost-btn" id="refreshBtn">Refresh</button>
-        <button class="ghost-btn" id="syncBtn">Re-sync Discord nicknames</button>
-        <button class="ghost-btn" id="copyBtn">Copy as CSV</button>
-        <button class="ghost-btn" id="downloadBtn">Download CSV</button>
-        <a class="ghost-btn" id="rosterMdLink" href="#" target="_blank" rel="noopener">roster.md</a>
-        <a class="ghost-btn" id="rosterCsvLink" href="#" target="_blank" rel="noopener">roster.csv</a>
-        <a class="ghost-btn" id="rosterJsonLink" href="#" target="_blank" rel="noopener">roster.json</a>
-      </div>
-
-      <div id="tableWrap">
-        <div class="loading">Loading roster…</div>
-      </div>
-
-      <details class="import-box">
-        <summary>Bulk import / paste your old list</summary>
-        <p class="import-hint">One driver per line: <b>number, iRacing name, iRacing ID, Discord username</b> — comma or tab separated. Leading zeros are kept as typed. Existing numbers get overwritten with the pasted values.</p>
-        <textarea id="importText" placeholder="7, Jack Miller, 482913, jackmiller&#10;44, Lewis H, 501122, lewish"></textarea>
-        <div class="import-actions">
-          <button class="ghost-btn" id="importBtn">Import list</button>
-          <span class="status-msg" id="importStatus"></span>
-        </div>
-      </details>
-    </div>
-  </section>
 </div>
 
 <!-- Browse modal -->
@@ -605,8 +571,6 @@
 
   let takenNumbers = new Set();   // canonical integers, e.g. 1
   let takenDisplays = {};         // canonical -> the form it was claimed in, e.g. "01"
-  let adminSecret = null;
-  let adminRoster = {};
 
   // A race number has a canonical value (what gets locked) and a display form
   // (what the driver typed). 1, 01 and 001 all share canonical 1.
@@ -849,7 +813,7 @@
         </tr>`).join('');
       wrap.innerHTML = `
         <table>
-          <thead><tr><th>Number</th><th>Driver</th><th>Discord</th></tr></thead>
+          <thead><tr><th>Number</th><th>Driver</th></tr></thead>
           <tbody>${rows}</tbody>
         </table>`;
     }catch(e){
@@ -858,205 +822,9 @@
     }
   }
 
-  // ---------- Admin gate ----------
-  document.getElementById('adminUnlockBtn').addEventListener('click', async ()=>{
-    const pass = document.getElementById('adminPass').value.trim();
-    const statusEl = document.getElementById('adminGateStatus');
-    if(!pass){
-      statusEl.textContent = 'Enter the admin passphrase.';
-      statusEl.className = 'status-msg bad';
-      return;
-    }
-    try{
-      const res = await fetch(`${API_BASE_URL}/api/admin/roster`, {
-        headers: {'x-admin-secret': pass}
-      });
-      if(!res.ok){
-        statusEl.textContent = 'Incorrect passphrase.';
-        statusEl.className = 'status-msg bad';
-        return;
-      }
-      const data = await res.json();
-      adminSecret = pass;
-      adminRoster = data.roster || {};
-      document.getElementById('adminGate').style.display = 'none';
-      document.getElementById('adminContent').style.display = 'block';
-      renderTable();
-    }catch(e){
-      statusEl.textContent = "Couldn't reach the admin server — check the site is configured correctly.";
-      statusEl.className = 'status-msg bad';
-    }
-  });
-
-  async function adminFetch(path, options){
-    return fetch(`${API_BASE_URL}${path}`, {
-      ...options,
-      headers: {...(options && options.headers), 'x-admin-secret': adminSecret}
-    });
-  }
-
-  async function refreshAdminRoster(){
-    const res = await adminFetch('/api/admin/roster');
-    const data = await res.json();
-    adminRoster = data.roster || {};
-  }
-
-  // ---------- Admin table ----------
-  function renderTable(filter){
-    const wrap = document.getElementById('tableWrap');
-    const entries = Object.entries(adminRoster)
-      .map(([key, d])=>({...d, num: parseInt(key,10), display: d.display || key}))
-      .sort((a,b)=>a.num-b.num);
-
-    const f = (filter||'').toLowerCase().trim();
-    const filtered = f ? entries.filter(e =>
-      String(e.display).includes(f) ||
-      String(e.num).includes(f) ||
-      (e.name||'').toLowerCase().includes(f) ||
-      (e.iracing||'').toLowerCase().includes(f) ||
-      (e.discordUsername||'').toLowerCase().includes(f)
-    ) : entries;
-
-    if(filtered.length === 0){
-      wrap.innerHTML = `<div class="empty-state">${entries.length===0 ? 'No drivers registered yet.' : 'No matches.'}</div>`;
-      return;
-    }
-
-    let rows = filtered.map(e => `
-      <tr data-n="${e.num}">
-        <td class="num">#${escapeHtml(e.display)}</td>
-        <td>${escapeHtml(e.name||'')}</td>
-        <td>${escapeHtml(e.iracing||'')}</td>
-        <td>${escapeHtml(e.discordUsername||'—')}</td>
-        <td>${e.ts ? new Date(e.ts).toLocaleDateString() : '—'}</td>
-        <td class="actions"><button class="row-remove" data-n="${e.num}">Remove</button></td>
-      </tr>`).join('');
-
-    wrap.innerHTML = `
-      <table>
-        <thead><tr><th>Number</th><th>Driver</th><th>iRacing ID</th><th>Discord</th><th>Joined</th><th></th></tr></thead>
-        <tbody>${rows}</tbody>
-      </table>`;
-
-    wrap.querySelectorAll('.row-remove').forEach(btn=>{
-      btn.addEventListener('click', async ()=>{
-        const n = btn.dataset.n;
-        const shown = adminRoster[n] ? (adminRoster[n].display || n) : n;
-        if(!confirm(`Remove #${shown} (${adminRoster[n] ? adminRoster[n].name : ''}) from the roster?`)) return;
-        try{
-          await adminFetch(`/api/admin/roster/${n}`, {method: 'DELETE'});
-          await refreshAdminRoster();
-          await fetchTakenNumbers();
-          loadPublicRoster();
-          renderTable(document.getElementById('adminSearch').value);
-        }catch(e){
-          alert('Could not remove — try again.');
-        }
-      });
-    });
-  }
-
   function escapeHtml(s){
     return String(s === undefined || s === null ? '' : s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
   }
-
-  document.getElementById('adminSearch').addEventListener('input', (e)=> renderTable(e.target.value));
-  document.getElementById('refreshBtn').addEventListener('click', async ()=>{
-    await refreshAdminRoster();
-    await fetchTakenNumbers();
-    renderTable(document.getElementById('adminSearch').value);
-  });
-
-  document.getElementById('syncBtn').addEventListener('click', async ()=>{
-    const btn = document.getElementById('syncBtn');
-    const orig = btn.textContent;
-    btn.textContent = 'Syncing…';
-    try{
-      const res = await adminFetch('/api/admin/sync', {method: 'POST'});
-      const data = await res.json();
-      btn.textContent = orig;
-      alert(`Sync complete: ${data.updated} nicknames updated, ${data.failed} skipped (not found in server or couldn't be renamed).`);
-    }catch(e){
-      btn.textContent = orig;
-      alert('Sync failed — try again.');
-    }
-  });
-
-  function toCSV(){
-    const entries = Object.entries(adminRoster)
-      .map(([key,d])=>({...d, num: parseInt(key,10), display: d.display || key}))
-      .sort((a,b)=>a.num-b.num);
-    const lines = ['number,iracing_name,iracing_id,discord_username'];
-    entries.forEach(e => lines.push(`${e.display},"${(e.name||'').replace(/"/g,'""')}",${e.iracing||''},${e.discordUsername||''}`));
-    return lines.join('\n');
-  }
-
-  document.getElementById('copyBtn').addEventListener('click', async ()=>{
-    const csv = toCSV();
-    try{
-      await navigator.clipboard.writeText(csv);
-      const btn = document.getElementById('copyBtn');
-      const orig = btn.textContent;
-      btn.textContent = 'Copied!';
-      setTimeout(()=> btn.textContent = orig, 1500);
-    }catch(e){
-      alert('Could not copy — your browser may be blocking clipboard access.');
-    }
-  });
-
-  document.getElementById('downloadBtn').addEventListener('click', ()=>{
-    const csv = toCSV();
-    const blob = new Blob([csv], {type: 'text/csv'});
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = 'southern-cross-roster.csv';
-    a.click();
-    URL.revokeObjectURL(url);
-  });
-
-  // ---------- Bulk import ----------
-  document.getElementById('importBtn').addEventListener('click', async ()=>{
-    const raw = document.getElementById('importText').value;
-    const statusEl = document.getElementById('importStatus');
-    const lines = raw.split('\n').map(l=>l.trim()).filter(Boolean);
-    if(lines.length === 0){
-      statusEl.textContent = 'Paste some rows first.';
-      statusEl.className = 'status-msg bad';
-      return;
-    }
-    const rows = [];
-    let skippedParse = 0;
-    lines.forEach(line=>{
-      const parts = line.split(/,|\t/).map(p=>p.trim());
-      if(parts.length < 2){ skippedParse++; return; }
-      const num = parseRaceNumber(parts[0]);
-      if(!num){ skippedParse++; return; }
-      rows.push({number: num.display, name: parts[1] || '', iracing: parts[2] || '', discordUsername: parts[3] || ''});
-    });
-
-    try{
-      const res = await adminFetch('/api/admin/import', {
-        method: 'POST',
-        headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({rows})
-      });
-      const data = await res.json();
-      const skipped = (data.skipped || 0) + skippedParse;
-      const conflicts = data.conflicts || 0;
-      const duplicates = data.duplicates || 0;
-      statusEl.textContent = `Imported ${data.added} driver${data.added===1?'':'s'}${skipped ? `, skipped ${skipped} bad row${skipped===1?'':'s'}` : ''}${conflicts ? `, ${conflicts} number${conflicts===1?'':'s'} already taken` : ''}${duplicates ? `, ${duplicates} already registered` : ''}.`;
-      statusEl.className = 'status-msg ok';
-      document.getElementById('importText').value = '';
-      await refreshAdminRoster();
-      await fetchTakenNumbers();
-      loadPublicRoster();
-      renderTable();
-    }catch(e){
-      statusEl.textContent = 'Import failed — try again.';
-      statusEl.className = 'status-msg bad';
-    }
-  });
 
   // ---------- Init ----------
   (async function init(){
