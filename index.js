@@ -8,9 +8,9 @@
 //    forms, and keeps the exact form they typed as their display number.
 //  - Automatically sets the driver's server nickname to "#Number Name", where
 //    Name is their iRacing name.
-//  - Keeps one shared roster (data.json) that the bot and the webpage read from.
-//  - Regenerates a published roster document (roster.md / roster.csv /
-//    roster.json) on every change, served publicly and shown on the website.
+//  - Keeps the roster in Supabase (Postgres), shared by the bot and the webpage.
+//  - Renders the public roster document (roster.md / roster.csv / roster.json)
+//    on demand from the database, served publicly and shown on the website.
 //  - Keeps a pinned roster message in a Discord channel in sync (optional).
 //  - Admin actions (remove / reassign a number) are available as a /admin
 //    command, restricted to whoever your server lets run it (see README), and
@@ -19,10 +19,10 @@
 // Run with: npm install && npm start
 
 require('dotenv').config();
-const fs = require('fs');
 const path = require('path');
 const express = require('express');
 const cors = require('cors');
+const db = require('./db.js'); // the only module that talks to Supabase
 const {
   Client,
   GatewayIntentBits,
@@ -33,13 +33,6 @@ const {
   EmbedBuilder,
   Events,
 } = require('discord.js');
-
-const DATA_FILE = path.join(__dirname, 'data.json');
-const STATE_FILE = path.join(__dirname, 'state.json');
-const PUBLIC_DIR = path.join(__dirname, 'public');
-const ROSTER_MD = path.join(PUBLIC_DIR, 'roster.md');
-const ROSTER_CSV = path.join(PUBLIC_DIR, 'roster.csv');
-const ROSTER_JSON = path.join(PUBLIC_DIR, 'roster.json');
 
 const MIN_NUMBER = 1;
 const MAX_NUMBER = 999;
@@ -82,35 +75,11 @@ function parseRaceNumber(raw) {
 }
 
 // ---------- Roster storage ----------
-// roster shape:
+// The roster lives in Supabase (see db.js). Reads come back in this shape:
 //   { "7": { display: "07", name, iracing, discordId, discordUsername, ts } }
 // The key is always the canonical number as a string.
-function loadRoster() {
-  try {
-    return JSON.parse(fs.readFileSync(DATA_FILE, 'utf8'));
-  } catch (e) {
-    return {};
-  }
-}
-function saveRosterToDisk(roster) {
-  fs.writeFileSync(DATA_FILE, JSON.stringify(roster, null, 2));
-  publishRoster(roster);
-}
 
-function loadState() {
-  try {
-    return JSON.parse(fs.readFileSync(STATE_FILE, 'utf8'));
-  } catch (e) {
-    return {};
-  }
-}
-function saveState(state) {
-  fs.writeFileSync(STATE_FILE, JSON.stringify(state, null, 2));
-}
-
-let roster = loadRoster();
-
-// simple in-process write lock so two near-simultaneous requests can't corrupt data
+// simple in-process write lock so two near-simultaneous requests can't interleave
 let writeQueue = Promise.resolve();
 function withLock(fn) {
   const run = writeQueue.then(fn, fn);
@@ -125,19 +94,9 @@ function rosterEntries(r) {
     .sort((a, b) => a.canonical - b.canonical);
 }
 
-// Find an existing entry for a Discord user, so nobody claims two numbers.
-function findEntryForDiscordUser(r, { discordId, discordUsername }) {
-  const uname = (discordUsername || '').toLowerCase();
-  for (const [key, e] of Object.entries(r)) {
-    if (discordId && e.discordId === discordId) return { key, entry: e };
-    if (uname && (e.discordUsername || '').toLowerCase() === uname) return { key, entry: e };
-  }
-  return null;
-}
-
 // ---------- The published roster document ----------
-// Regenerated from data.json on every change. This is the single source of
-// truth the website reads and the Discord message mirrors.
+// Rendered on demand from the database. This is what the website reads and the
+// Discord message mirrors.
 function formatStamp(d) {
   const p = (n) => String(n).padStart(2, '0');
   return `${p(d.getDate())}-${p(d.getMonth() + 1)}-${d.getFullYear()} ${p(d.getHours())}:${p(d.getMinutes())}`;
@@ -175,8 +134,8 @@ function renderRosterCsv(entries) {
 }
 
 // The public roster deliberately leaves out iRacing customer IDs. Those stay in
-// data.json and the Admin tab only. Add `iracing: e.iracing` below if you want
-// them published.
+// the database and the Admin tab only. Add `iracing: e.iracing` below if you
+// want them published.
 function publicRoster(r) {
   const stamp = new Date();
   const entries = rosterEntries(r).map((e) => ({
@@ -187,20 +146,6 @@ function publicRoster(r) {
     ts: e.ts || null,
   }));
   return { updatedAt: stamp.toISOString(), updatedAtLabel: formatStamp(stamp), count: entries.length, drivers: entries };
-}
-
-function publishRoster(r) {
-  try {
-    if (!fs.existsSync(PUBLIC_DIR)) fs.mkdirSync(PUBLIC_DIR, { recursive: true });
-    const doc = publicRoster(r);
-    const entries = rosterEntries(r);
-    fs.writeFileSync(ROSTER_MD, renderRosterMarkdown(entries, doc.updatedAtLabel));
-    fs.writeFileSync(ROSTER_CSV, renderRosterCsv(entries));
-    fs.writeFileSync(ROSTER_JSON, JSON.stringify(doc, null, 2));
-  } catch (e) {
-    console.error('Could not write roster document:', e.message);
-  }
-  scheduleDiscordRosterUpdate();
 }
 
 // ---------- Discord client ----------
@@ -297,7 +242,7 @@ function rosterEmbed(entries, stamp) {
 
 async function updateDiscordRoster() {
   if (!ROSTER_CHANNEL_ID || !client.isReady()) return;
-  const current = loadRoster();
+  const current = await db.getRoster();
   const entries = rosterEntries(current);
   const embed = rosterEmbed(entries, formatStamp(new Date()));
 
@@ -307,17 +252,16 @@ async function updateDiscordRoster() {
     return;
   }
 
-  const state = loadState();
-  if (state.rosterMessageId) {
-    const existing = await channel.messages.fetch(state.rosterMessageId).catch(() => null);
+  const rosterMessageId = await db.getState('rosterMessageId');
+  if (rosterMessageId) {
+    const existing = await channel.messages.fetch(rosterMessageId).catch(() => null);
     if (existing) {
       await existing.edit({ embeds: [embed] });
       return;
     }
   }
   const sent = await channel.send({ embeds: [embed] });
-  state.rosterMessageId = sent.id;
-  saveState(state);
+  await db.setState('rosterMessageId', sent.id);
   await sent.pin().catch(() => {});
 }
 
@@ -375,8 +319,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
   if (!interaction.isChatInputCommand()) return;
 
   if (interaction.commandName === 'roster') {
-    roster = loadRoster();
-    const entries = rosterEntries(roster);
+    const entries = rosterEntries(await db.getRoster());
     return interaction.reply({
       embeds: [rosterEmbed(entries, formatStamp(new Date()))],
       ephemeral: true,
@@ -398,25 +341,8 @@ client.on(Events.InteractionCreate, async (interaction) => {
     await interaction.deferReply({ ephemeral: true });
 
     await withLock(async () => {
-      roster = loadRoster();
-
-      const taken = roster[num.key];
-      if (taken) {
-        const asShown = taken.display !== num.display ? ` (registered as #${taken.display})` : '';
-        return interaction.editReply(`#${num.display} is already taken${asShown} - try another number.`);
-      }
-
-      const mine = findEntryForDiscordUser(roster, {
-        discordId: interaction.user.id,
-        discordUsername: interaction.user.username,
-      });
-      if (mine) {
-        return interaction.editReply(
-          `You already have #${mine.entry.display}. Ask an admin if you want to change it.`
-        );
-      }
-
       const entry = {
+        canonical: num.canonical,
         display: num.display,
         name,
         iracing,
@@ -424,16 +350,30 @@ client.on(Events.InteractionCreate, async (interaction) => {
         discordUsername: interaction.user.username,
         ts: Date.now(),
       };
-      roster[num.key] = entry;
-      saveRosterToDisk(roster);
+
+      const result = await db.claimNumber(entry);
+      if (!result.ok) {
+        if (result.reason === 'number_taken') {
+          const taken = await db.getByCanonical(num.canonical);
+          const asShown = taken && taken.display !== num.display ? ` (registered as #${taken.display})` : '';
+          return interaction.editReply(`#${num.display} is already taken${asShown} - try another number.`);
+        }
+        // already_registered
+        const mine = (await db.getByDiscordUser(interaction.user.id))
+          || (await db.getByDiscordUsername(interaction.user.username));
+        return interaction.editReply(
+          `You already have #${mine.display}. Ask an admin if you want to change it.`
+        );
+      }
+      scheduleDiscordRosterUpdate();
 
       const member = await interaction.guild.members.fetch(interaction.user.id).catch(() => null);
       let nickMsg = '';
       let roleMsg = '';
       if (member) {
-        const result = await setMemberNickname(member, name, num.display);
-        nickMsg = result.ok
-          ? ` Your nickname is now set to "${result.nickname}".`
+        const nickResult = await setMemberNickname(member, name, num.display);
+        nickMsg = nickResult.ok
+          ? ` Your nickname is now set to "${nickResult.nickname}".`
           : ` (Couldn't set your nickname automatically - ask an admin to check bot role position.)`;
         const roleResult = await assignMemberRole(member);
         if (roleResult.ok && !roleResult.already) roleMsg = ` You've been given the ${roleResult.role} role.`;
@@ -448,8 +388,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
     const sub = interaction.options.getSubcommand();
 
     if (sub === 'list') {
-      roster = loadRoster();
-      const entries = rosterEntries(roster);
+      const entries = rosterEntries(await db.getRoster());
       if (entries.length === 0) return interaction.reply({ content: 'Roster is empty.', ephemeral: true });
       const lines = entries.map((e) => `#${e.display} - ${e.name} (${e.iracing})`);
       return interaction.reply({ content: lines.join('\n').slice(0, 1900), ephemeral: true });
@@ -460,14 +399,12 @@ client.on(Events.InteractionCreate, async (interaction) => {
       if (!num) return interaction.reply({ content: 'That is not a valid race number.', ephemeral: true });
 
       await withLock(async () => {
-        roster = loadRoster();
-        if (!roster[num.key]) {
+        const removed = await db.removeByCanonical(num.canonical);
+        if (!removed) {
           return interaction.reply({ content: `#${num.display} isn't taken.`, ephemeral: true });
         }
-        const freed = roster[num.key].display;
-        delete roster[num.key];
-        saveRosterToDisk(roster);
-        await interaction.reply({ content: `#${freed} has been freed up.`, ephemeral: true });
+        scheduleDiscordRosterUpdate();
+        await interaction.reply({ content: `#${removed.display} has been freed up.`, ephemeral: true });
       });
       return;
     }
@@ -481,8 +418,29 @@ client.on(Events.InteractionCreate, async (interaction) => {
       if (!num) return interaction.reply({ content: 'That is not a valid race number.', ephemeral: true });
 
       await withLock(async () => {
-        roster = loadRoster();
+        // "Assign or override": move this driver to this number, evicting any
+        // current holder. Delete-then-insert (only /admin set does this).
+        // 1. Move - free any number this driver already holds.
+        let movedFrom = null;
+        if (discordUser) {
+          const priors = [];
+          const byId = await db.getByDiscordUser(discordUser.id);
+          if (byId) priors.push(byId);
+          const byName = await db.getByDiscordUsername(discordUser.username);
+          if (byName) priors.push(byName);
+          const cleared = new Set();
+          for (const prior of priors) {
+            if (prior.canonical === num.canonical || cleared.has(prior.canonical)) continue;
+            cleared.add(prior.canonical);
+            if (!movedFrom) movedFrom = prior.display;
+            await db.removeByCanonical(prior.canonical);
+          }
+        }
+        // 2. Evict - whoever currently holds the target number.
+        const evicted = await db.removeByCanonical(num.canonical);
+        // 3. Insert the new row.
         const entry = {
+          canonical: num.canonical,
           display: num.display,
           name,
           iracing,
@@ -490,34 +448,44 @@ client.on(Events.InteractionCreate, async (interaction) => {
           discordUsername: discordUser ? discordUser.username : undefined,
           ts: Date.now(),
         };
-        roster[num.key] = entry;
-        saveRosterToDisk(roster);
+        const result = await db.claimNumber(entry);
+        if (!result.ok) {
+          return interaction.reply({ content: `Couldn't set #${num.display} - ${result.reason}. Try /admin remove first.`, ephemeral: true });
+        }
+        scheduleDiscordRosterUpdate();
 
         let nickMsg = '';
         if (discordUser) {
           const member = await interaction.guild.members.fetch(discordUser.id).catch(() => null);
           if (member) {
-            const result = await setMemberNickname(member, name, num.display);
-            nickMsg = result.ok ? ` Nickname set to "${result.nickname}".` : ` (Couldn't set nickname - check bot role position.)`;
+            const r = await setMemberNickname(member, name, num.display);
+            nickMsg = r.ok ? ` Nickname set to "${r.nickname}".` : ` (Couldn't set nickname - check bot role position.)`;
             await assignMemberRole(member);
           }
         }
-        await interaction.reply({ content: `#${num.display} set to ${name}.${nickMsg}`, ephemeral: true });
+
+        let msg = `#${num.display} set to ${name}.${nickMsg}`;
+        if (movedFrom) msg += ` Moved from #${movedFrom}.`;
+        if (evicted && (!discordUser || evicted.discordId !== discordUser.id)) {
+          msg += ` Evicted ${evicted.name} from #${num.display}.`;
+        }
+        await interaction.reply({ content: msg, ephemeral: true });
       });
       return;
     }
 
     if (sub === 'sync') {
       await interaction.deferReply({ ephemeral: true });
-      roster = loadRoster();
+      const roster = await db.getRoster();
       let ok = 0, failed = 0;
       for (const key of Object.keys(roster)) {
         const entry = roster[key];
         entry.display = entry.display || key;
         const result = await tryResolveAndRename(interaction.guild, entry);
         if (result.ok) ok++; else failed++;
+        if (entry.discordId) await db.setDiscordUserId(entry.canonical, entry.discordId);
       }
-      saveRosterToDisk(roster);
+      scheduleDiscordRosterUpdate();
       await interaction.editReply(`Sync complete: ${ok} nicknames updated, ${failed} skipped (member not found or couldn't be renamed).`);
       return;
     }
@@ -527,17 +495,17 @@ client.on(Events.InteractionCreate, async (interaction) => {
 // A newly-joining member might already be on the roster (registered on the
 // webpage before joining Discord) - apply their nickname as soon as they arrive.
 client.on(Events.GuildMemberAdd, async (member) => {
-  roster = loadRoster();
+  const roster = await db.getRoster();
   for (const [key, entry] of Object.entries(roster)) {
     if (
       (entry.discordUsername && entry.discordUsername.toLowerCase() === member.user.username.toLowerCase()) ||
       entry.discordId === member.id
     ) {
-      entry.discordId = member.id;
       entry.display = entry.display || key;
       await setMemberNickname(member, entry.name, entry.display);
       await assignMemberRole(member);
-      saveRosterToDisk(roster);
+      // Cache their id now that we've matched them (likely by username on join).
+      await db.setDiscordUserId(entry.canonical, member.id);
       break;
     }
   }
@@ -547,6 +515,14 @@ client.on(Events.GuildMemberAdd, async (member) => {
 const app = express();
 app.use(express.json());
 app.use(cors({ origin: ALLOWED_ORIGIN === '*' ? true : ALLOWED_ORIGIN }));
+
+// Wrap an async route so a rejected promise (e.g. a database error) becomes a
+// clean 500 instead of a hung request.
+const wrap = (fn) => (req, res) =>
+  Promise.resolve(fn(req, res)).catch((e) => {
+    console.error('Request failed:', e.message);
+    if (!res.headersSent) res.status(500).json({ error: 'Something went wrong. Please try again.' });
+  });
 
 // Public: the signup webpage itself, served from this same Render service so the
 // page and its API share one origin (no CORS, no external URL to configure).
@@ -560,28 +536,35 @@ function requireAdmin(req, res, next) {
 
 // Public: which numbers are taken. Returns canonical integers, so the webpage
 // knows 1, 01 and 001 are all gone once any one of them is claimed.
-app.get('/api/taken-numbers', (req, res) => {
-  roster = loadRoster();
+app.get('/api/taken-numbers', wrap(async (req, res) => {
+  const roster = await db.getRoster();
   res.json({
     taken: Object.keys(roster).map(Number),
     // display forms, keyed by canonical number, so we can say "taken as #01"
     displays: Object.fromEntries(Object.entries(roster).map(([k, e]) => [k, e.display || k])),
   });
-});
+}));
 
 // Public: the roster document, as JSON
-app.get('/api/roster', (req, res) => {
-  roster = loadRoster();
-  res.json(publicRoster(roster));
-});
+app.get('/api/roster', wrap(async (req, res) => {
+  res.json(publicRoster(await db.getRoster()));
+}));
 
-// Public: the roster document as downloadable files
-app.get('/roster.md', (req, res) => res.type('text/markdown').sendFile(ROSTER_MD));
-app.get('/roster.csv', (req, res) => res.type('text/csv').sendFile(ROSTER_CSV));
-app.get('/roster.json', (req, res) => res.type('application/json').sendFile(ROSTER_JSON));
+// Public: the roster document as downloadable files, rendered per request
+app.get('/roster.md', wrap(async (req, res) => {
+  const entries = rosterEntries(await db.getRoster());
+  res.type('text/markdown').send(renderRosterMarkdown(entries, formatStamp(new Date())));
+}));
+app.get('/roster.csv', wrap(async (req, res) => {
+  const entries = rosterEntries(await db.getRoster());
+  res.type('text/csv').send(renderRosterCsv(entries));
+}));
+app.get('/roster.json', wrap(async (req, res) => {
+  res.type('application/json').send(JSON.stringify(publicRoster(await db.getRoster()), null, 2));
+}));
 
 // Public: register a number from the webpage
-app.post('/api/register', async (req, res) => {
+app.post('/api/register', wrap(async (req, res) => {
   const { name, iracing, discordUsername, number } = req.body || {};
   const num = parseRaceNumber(number);
 
@@ -593,39 +576,40 @@ app.post('/api/register', async (req, res) => {
   }
 
   await withLock(async () => {
-    roster = loadRoster();
-
-    const taken = roster[num.key];
-    if (taken) {
-      const asShown = taken.display !== num.display ? ` (registered as #${taken.display})` : '';
-      return res.status(409).json({ error: `#${num.display} was just taken${asShown} - pick another number.` });
-    }
-
     const cleanDiscord = String(discordUsername).trim();
-    const mine = findEntryForDiscordUser(roster, { discordUsername: cleanDiscord });
-    if (mine) {
-      return res.status(409).json({
-        error: `${cleanDiscord} already has #${mine.entry.display}. Ask an admin if you want to change it.`,
-      });
-    }
-
     const entry = {
+      canonical: num.canonical,
       display: num.display,
       name: String(name).trim(),
       iracing: String(iracing).trim(),
+      discordId: undefined,
       discordUsername: cleanDiscord,
       ts: Date.now(),
     };
-    roster[num.key] = entry;
-    saveRosterToDisk(roster);
+
+    const result = await db.claimNumber(entry);
+    if (!result.ok) {
+      if (result.reason === 'number_taken') {
+        const taken = await db.getByCanonical(num.canonical);
+        const asShown = taken && taken.display !== num.display ? ` (registered as #${taken.display})` : '';
+        return res.status(409).json({ error: `#${num.display} was just taken${asShown} - pick another number.` });
+      }
+      // already_registered
+      const mine = await db.getByDiscordUsername(cleanDiscord);
+      return res.status(409).json({
+        error: `${cleanDiscord} already has #${mine ? mine.display : ''}. Ask an admin if you want to change it.`,
+      });
+    }
+    scheduleDiscordRosterUpdate();
 
     // Try to rename them immediately if they're already in the server
     const guild = await client.guilds.fetch(GUILD_ID).catch(() => null);
     let renamed = false;
     if (guild) {
-      const result = await tryResolveAndRename(guild, entry);
-      renamed = result.ok;
-      saveRosterToDisk(roster);
+      const r = await tryResolveAndRename(guild, entry);
+      renamed = r.ok;
+      // Cache the resolved Discord id so a later username change can't orphan them.
+      if (entry.discordId) await db.setDiscordUserId(entry.canonical, entry.discordId);
     }
 
     res.json({
@@ -637,56 +621,57 @@ app.post('/api/register', async (req, res) => {
         : `Registered! We couldn't find you in the Discord server yet - your nickname will be set automatically once you join, or ask an admin to run /admin sync.`,
     });
   });
-});
+}));
 
 // Admin: full roster (includes Discord info and iRacing customer IDs)
-app.get('/api/admin/roster', requireAdmin, (req, res) => {
-  roster = loadRoster();
-  res.json({ roster });
-});
+app.get('/api/admin/roster', requireAdmin, wrap(async (req, res) => {
+  res.json({ roster: await db.getRoster() });
+}));
 
 // Admin: remove an entry
-app.delete('/api/admin/roster/:number', requireAdmin, (req, res) => {
+app.delete('/api/admin/roster/:number', requireAdmin, wrap(async (req, res) => {
   const num = parseRaceNumber(req.params.number);
   if (!num) return res.status(400).json({ error: 'Not a valid race number' });
 
-  withLock(async () => {
-    roster = loadRoster();
-    if (!roster[num.key]) return res.status(404).json({ error: 'Not found' });
-    delete roster[num.key];
-    saveRosterToDisk(roster);
+  await withLock(async () => {
+    const removed = await db.removeByCanonical(num.canonical);
+    if (!removed) return res.status(404).json({ error: 'Not found' });
+    scheduleDiscordRosterUpdate();
     res.json({ ok: true });
   });
-});
+}));
 
 // Admin: bulk import (used by the "Bulk import" box on the webpage)
-app.post('/api/admin/import', requireAdmin, async (req, res) => {
+app.post('/api/admin/import', requireAdmin, wrap(async (req, res) => {
   const { rows } = req.body || {}; // rows: [{number, name, iracing, discordUsername}]
   if (!Array.isArray(rows)) return res.status(400).json({ error: 'rows must be an array' });
 
   await withLock(async () => {
-    roster = loadRoster();
-    let added = 0, skipped = 0;
+    let added = 0, skipped = 0, conflicts = 0, duplicates = 0;
     for (const row of rows) {
       const num = parseRaceNumber(row.number);
-      if (!num) { skipped++; continue; }
-      roster[num.key] = {
+      if (!num) { skipped++; continue; } // invalid/unparseable row
+      const result = await db.claimNumber({
+        canonical: num.canonical,
         display: num.display,
         name: row.name || '',
         iracing: row.iracing || '',
-        discordUsername: row.discordUsername || '',
+        discordId: undefined,
+        discordUsername: row.discordUsername || undefined,
         ts: Date.now(),
-      };
-      added++;
+      });
+      if (result.ok) added++;
+      else if (result.reason === 'number_taken') conflicts++;  // number already held
+      else duplicates++;                                       // already_registered (handle)
     }
-    saveRosterToDisk(roster);
-    res.json({ ok: true, added, skipped });
+    scheduleDiscordRosterUpdate();
+    res.json({ ok: true, added, skipped, conflicts, duplicates });
   });
-});
+}));
 
 // Admin: re-apply nicknames for the whole roster on demand (same as /admin sync)
-app.post('/api/admin/sync', requireAdmin, async (req, res) => {
-  roster = loadRoster();
+app.post('/api/admin/sync', requireAdmin, wrap(async (req, res) => {
+  const roster = await db.getRoster();
   const guild = await client.guilds.fetch(GUILD_ID).catch(() => null);
   if (!guild) return res.status(500).json({ error: 'Bot is not connected to the server yet' });
 
@@ -696,17 +681,17 @@ app.post('/api/admin/sync', requireAdmin, async (req, res) => {
     entry.display = entry.display || key;
     const result = await tryResolveAndRename(guild, entry);
     if (result.ok) ok++; else failed++;
+    if (entry.discordId) await db.setDiscordUserId(entry.canonical, entry.discordId);
   }
-  saveRosterToDisk(roster);
+  scheduleDiscordRosterUpdate();
   res.json({ ok: true, updated: ok, failed });
-});
+}));
 
-// Admin: force a rebuild of the roster document and the pinned Discord message
-app.post('/api/admin/publish', requireAdmin, async (req, res) => {
-  roster = loadRoster();
-  publishRoster(roster);
+// Admin: force a refresh of the pinned Discord roster message
+app.post('/api/admin/publish', requireAdmin, wrap(async (req, res) => {
+  scheduleDiscordRosterUpdate();
   res.json({ ok: true });
-});
+}));
 
 // ---------- Boot everything ----------
 (async () => {
@@ -714,7 +699,7 @@ app.post('/api/admin/publish', requireAdmin, async (req, res) => {
   await client.login(DISCORD_TOKEN);
   client.once(Events.ClientReady, (c) => {
     console.log(`Bot logged in as ${c.user.tag}`);
-    publishRoster(loadRoster()); // make sure the document exists on first boot
+    scheduleDiscordRosterUpdate(); // sync the pinned roster message on boot
   });
 
   const port = PORT || 3000;

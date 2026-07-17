@@ -1001,7 +1001,9 @@
       });
       const data = await res.json();
       const skipped = (data.skipped || 0) + skippedParse;
-      statusEl.textContent = `Imported ${data.added} driver${data.added===1?'':'s'}${skipped ? `, skipped ${skipped} bad row${skipped===1?'':'s'}` : ''}.`;
+      const conflicts = data.conflicts || 0;
+      const duplicates = data.duplicates || 0;
+      statusEl.textContent = `Imported ${data.added} driver${data.added===1?'':'s'}${skipped ? `, skipped ${skipped} bad row${skipped===1?'':'s'}` : ''}${conflicts ? `, ${conflicts} number${conflicts===1?'':'s'} already taken` : ''}${duplicates ? `, ${duplicates} already registered` : ''}.`;
       statusEl.className = 'status-msg ok';
       document.getElementById('importText').value = '';
       await refreshAdminRoster();
