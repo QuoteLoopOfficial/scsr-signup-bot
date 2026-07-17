@@ -501,7 +501,7 @@ const wrap = (fn) => (req, res) =>
 // Public: the signup webpage itself, served from this same Render service so the
 // page and its API share one origin (no CORS, no external URL to configure).
 app.get('/', (req, res) => res.sendFile(path.join(__dirname, 'southern-cross-signup.html')));
-app.get('/scsr-logo.png', (req, res) => res.sendFile(path.join(__dirname, 'scsr-logo.png')));
+app.use('/assets', express.static(path.join(__dirname, 'assets')));
 
 // Public: which numbers are taken. Returns canonical integers, so the webpage
 // knows 1, 01 and 001 are all gone once any one of them is claimed.
