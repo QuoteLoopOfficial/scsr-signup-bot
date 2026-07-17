@@ -337,6 +337,12 @@ client.on(Events.InteractionCreate, async (interaction) => {
         ephemeral: true,
       });
     }
+    if (!/^[0-9]{1,8}$/.test(iracing)) {
+      return interaction.reply({
+        content: 'iRacing ID should be your customer number, digits only.',
+        ephemeral: true,
+      });
+    }
 
     await interaction.deferReply({ ephemeral: true });
 
@@ -573,6 +579,9 @@ app.post('/api/register', wrap(async (req, res) => {
   }
   if (!num) {
     return res.status(400).json({ error: `Number must be between ${MIN_NUMBER} and ${MAX_NUMBER}` });
+  }
+  if (!/^[0-9]{1,8}$/.test(String(iracing).trim())) {
+    return res.status(400).json({ error: 'iRacing ID should be your customer number, digits only.' });
   }
 
   await withLock(async () => {

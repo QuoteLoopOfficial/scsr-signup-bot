@@ -455,7 +455,7 @@
           </div>
           <div class="field">
             <label for="fIracing">iRacing ID (customer number)</label>
-            <input type="text" id="fIracing" class="mono" placeholder="e.g. 482913" maxlength="12" autocomplete="off" />
+            <input type="text" id="fIracing" class="mono" inputmode="numeric" placeholder="e.g. 482913" maxlength="12" autocomplete="off" />
           </div>
           <div class="field">
             <label for="fDiscord">Discord username</label>
@@ -712,6 +712,11 @@
     }
     if(!num){
       formMsg.textContent = `Number must be between ${MIN} and ${MAX}.`;
+      formMsg.className = 'form-msg show bad';
+      return;
+    }
+    if(!/^[0-9]{1,8}$/.test(iracing)){
+      formMsg.textContent = 'iRacing ID should be your customer number, digits only.';
       formMsg.className = 'form-msg show bad';
       return;
     }
